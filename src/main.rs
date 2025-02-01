@@ -139,8 +139,10 @@ fn visualize_dag(graph: &DiGraph<u32, ()>, dot_file: &str, image_file: &str) {
         Err(e) => println!("Failed to generate image: {}", e),
     }
 }
+
 /// Custom parser to read a `.dot` file and create a `DiGraph<u32, ()>`
 fn parse_dot_file_to_digraph(file_path: &str) -> DiGraph<u32, ()> {
+    use std::fs;
     let dot_content = fs::read_to_string(file_path).expect("Failed to read DOT file");
 
     let mut graph = DiGraph::<u32, ()>::new();
@@ -149,31 +151,54 @@ fn parse_dot_file_to_digraph(file_path: &str) -> DiGraph<u32, ()> {
     for line in dot_content.lines() {
         let line = line.trim();
 
-        // Match nodes
-        if line.starts_with(char::is_numeric) && line.contains("[") {
-            // Extract node ID
-            if let Some((node_id, _)) = line.split_once(" [") {
-                let node_id: u32 = node_id.trim().parse().expect("Node ID should be an integer");
-                let node_index = graph.add_node(node_id);
-                node_map.insert(node_id, node_index);
-            }
+        // Skip empty lines and DOT graph syntax lines
+        if line.is_empty() || line.starts_with("digraph") || line.starts_with("{") || line.starts_with("}") {
+            continue;
         }
 
-        // Match edges
+        // Check if this is an edge definition (contains "->")
         if line.contains("->") {
-            // Extract source and destination nodes
-            if let Some((src, dst)) = line.split_once("->") {
-                let src_id: u32 = src.trim().parse().expect("Source node ID should be an integer");
-                let dst_id: u32 = dst.split_once("[").map_or_else(
-                    || dst.trim().parse().expect("Destination node ID should be an integer"),
-                    |(id, _)| id.trim().parse().expect("Destination node ID should be an integer"),
-                );
-
-                // Add edge if both nodes exist
-                if let (Some(&src_idx), Some(&dst_idx)) = (node_map.get(&src_id), node_map.get(&dst_id)) {
-                    graph.add_edge(src_idx, dst_idx, ());
-                }
+            // For example: "0 -> 1 [ ]"
+            // Split by "->"
+            let parts: Vec<&str> = line.split("->").collect();
+            if parts.len() != 2 {
+                eprintln!("Warning: Unexpected edge format: {}", line);
+                continue;
             }
+            let src_str = parts[0].trim();
+            let dst_part = parts[1].trim();
+
+            // The destination may have an attribute block, e.g., "1 [ ]"
+            let dst_str = if let Some((id, _)) = dst_part.split_once('[') {
+                id.trim()
+            } else {
+                dst_part
+            };
+
+            // Parse the source and destination IDs
+            let src_id: u32 = src_str.parse().expect("Source node ID should be an integer");
+            let dst_id: u32 = dst_str.parse().expect("Destination node ID should be an integer");
+
+            // Insert nodes if not already present
+            let src_index = *node_map.entry(src_id).or_insert_with(|| graph.add_node(src_id));
+            let dst_index = *node_map.entry(dst_id).or_insert_with(|| graph.add_node(dst_id));
+
+            graph.add_edge(src_index, dst_index, ());
+        }
+        // Otherwise, treat it as a node definition
+        else if line.contains('[') {
+            // For example: "0 [ label = "0" ]"
+            // Split at the first whitespace or bracket to get the node id
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+            let node_str = tokens[0];
+            // Remove any trailing punctuation (if present)
+            let node_str = node_str.trim_end_matches(';');
+            let node_id: u32 = node_str.parse().expect("Node ID should be an integer");
+            // Insert node if not already present
+            node_map.entry(node_id).or_insert_with(|| graph.add_node(node_id));
         }
     }
 
