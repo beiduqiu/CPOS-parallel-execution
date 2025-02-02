@@ -95,12 +95,30 @@ fn generate_random_dag(node_count: usize, edge_count: usize) -> DiGraph<MyNode, 
     graph
 }
 
+/// Updates the label of the node with the given `target_id` to `new_label`.
+/// Returns `true` if the node was found and updated, or `false` otherwise.
+fn update_node_label(graph: &mut DiGraph<MyNode, ()>, target_id: u32, new_label: u32) -> bool {
+    for node_index in graph.node_indices() {
+        if graph[node_index].id == target_id {
+            if let Some(node) = graph.node_weight_mut(node_index) {
+                node.label = new_label;
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Perform topological sorting on a DiGraph<MyNode, ()> using Kahn's algorithm.
 /// Returns a vector of MyNode in topologically sorted order.
-fn topological_sort(graph: &DiGraph<MyNode, ()>) -> Vec<MyNode> {
+///
+/// Note: We require a mutable borrow here because we call `update_node_label`
+/// which requires `&mut graph`.
+fn topological_sort(graph: &mut DiGraph<MyNode, ()>) -> Vec<MyNode> {
     let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
     let mut queue = VecDeque::new();
     let mut sorted_order = Vec::new();
+    let mut num_start_nodes = 0;
 
     // Initialize in-degree for each node.
     for node in graph.node_indices() {
@@ -108,10 +126,19 @@ fn topological_sort(graph: &DiGraph<MyNode, ()>) -> Vec<MyNode> {
     }
 
     // Find nodes with zero in-degree.
+    // (We iterate over our in_degree HashMap, which is independent of the graph borrow.)
     for (&node, &degree) in &in_degree {
         if degree == 0 {
             queue.push_back(node);
+            num_start_nodes += 1;
+            // Convert node.index() (usize) to u32.
+            let updated = update_node_label(graph, node.index() as u32, 0);
+            assert!(updated, "The node with id {} should be updated", node.index());
         }
+    }
+    if num_start_nodes != 1 {
+        println!("Number of start nodes: {}", num_start_nodes);
+        panic!("The generated graph does not have a single start node.");
     }
 
     // Process nodes in topological order.
@@ -256,10 +283,10 @@ fn main() {
 
     // Parse the .dot file into a graph of MyNode.
     let dot_file = "dag_out.dot"; // Your .dot file path.
-    let graph = parse_dot_file_to_digraph(dot_file);
+    let mut graph = parse_dot_file_to_digraph(dot_file);
 
     // Perform topological sorting.
-    let sorted_order = topological_sort(&graph);
+    let sorted_order = topological_sort(&mut graph);
     println!("Topological Order:");
     for node in sorted_order {
         println!("Node {}: label {}", node.id, node.label);
@@ -267,4 +294,42 @@ fn main() {
 
     // Visualize the graph.
     visualize_dag(&graph, "dag_out.dot", "dag_out.png");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_update_node_label() {
+        // Create a graph with some nodes.
+        let mut graph: DiGraph<MyNode, ()> = DiGraph::new();
+        graph.add_node(MyNode { id: 0, label: 0 });
+        graph.add_node(MyNode { id: 1, label: 1 });
+        graph.add_node(MyNode { id: 2, label: 2 });
+        
+        // Verify initial labels.
+        for node in graph.node_weights() {
+            match node.id {
+                0 => assert_eq!(node.label, 0),
+                1 => assert_eq!(node.label, 1),
+                2 => assert_eq!(node.label, 2),
+                _ => panic!("Unexpected node id: {}", node.id),
+            }
+        }
+        
+        // Update the label for the node with id 1.
+        let updated = update_node_label(&mut graph, 1, 42);
+        assert!(updated, "The node with id 1 should be updated");
+        
+        // Check that node 1's label is updated while the others remain unchanged.
+        for node in graph.node_weights() {
+            match node.id {
+                0 => assert_eq!(node.label, 0),
+                1 => assert_eq!(node.label, 42),
+                2 => assert_eq!(node.label, 2),
+                _ => panic!("Unexpected node id: {}", node.id),
+            }
+        }
+    }
 }
