@@ -1,0 +1,6 @@
+
+		begin
+      f = addfile("/home/zifan/Desktop/c24.tile1.nc","r")
+      print(f)
+		end
+    
