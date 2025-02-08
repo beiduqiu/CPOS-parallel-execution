@@ -9,15 +9,27 @@ use std::process::Command;
 use std::fs;
 use std::io;
 
-// Define your custom node structure with a u32 label.
+// Define your custom node structure with a vector label of i32.
 #[derive(Debug, Clone)]
 struct MyNode {
     id: u32,
-    label: u32,
+    label: Vec<i32>,
+}
+
+impl MyNode {
+    fn new(mut label: Vec<i32>) -> Self {
+        label.sort(); // Ensure labels are always sorted
+        Self { id: 0, label }
+    }
+
+    fn update_label(&mut self, mut new_label: Vec<i32>) {
+        new_label.sort(); // Ensure the new label is sorted
+        self.label = new_label;
+    }
 }
 
 /// Generate a random DAG with MyNode nodes.
-/// Each node is created with id and label set to the same value.
+/// Each node is created with id and its label is initialized to a vector with -1 as the first element.
 fn generate_random_dag(node_count: usize, edge_count: usize) -> DiGraph<MyNode, ()> {
     let mut graph = DiGraph::<MyNode, ()>::new();
     let mut rng = rand::thread_rng();
@@ -27,7 +39,7 @@ fn generate_random_dag(node_count: usize, edge_count: usize) -> DiGraph<MyNode, 
     for i in 0..node_count {
         let node = MyNode {
             id: i as u32,
-            label: i as u32, // Here we simply set the label equal to the id.
+            label: vec![-1], // Initialize label with -1.
         };
         nodes.push(graph.add_node(node));
     }
@@ -97,11 +109,13 @@ fn generate_random_dag(node_count: usize, edge_count: usize) -> DiGraph<MyNode, 
 
 /// Updates the label of the node with the given `target_id` to `new_label`.
 /// Returns `true` if the node was found and updated, or `false` otherwise.
-fn update_node_label(graph: &mut DiGraph<MyNode, ()>, target_id: u32, new_label: u32) -> bool {
+///
+/// Here, we replace the node’s label vector with a new vector containing `new_label`.
+fn update_node_label(graph: &mut DiGraph<MyNode, ()>, target_id: u32, new_label: Vec<i32>) -> bool {
     for node_index in graph.node_indices() {
         if graph[node_index].id == target_id {
             if let Some(node) = graph.node_weight_mut(node_index) {
-                node.label = new_label;
+                node.update_label(new_label); // Use the update_label method to ensure sorting
                 return true;
             }
         }
@@ -115,6 +129,7 @@ fn update_node_label(graph: &mut DiGraph<MyNode, ()>, target_id: u32, new_label:
 /// Note: We require a mutable borrow here because we call `update_node_label`
 /// which requires `&mut graph`.
 fn topological_sort(graph: &mut DiGraph<MyNode, ()>) -> Vec<MyNode> {
+    let mut global_thread_num = 0;
     let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
     let mut queue = VecDeque::new();
     let mut sorted_order = Vec::new();
@@ -126,13 +141,12 @@ fn topological_sort(graph: &mut DiGraph<MyNode, ()>) -> Vec<MyNode> {
     }
 
     // Find nodes with zero in-degree.
-    // (We iterate over our in_degree HashMap, which is independent of the graph borrow.)
     for (&node, &degree) in &in_degree {
         if degree == 0 {
             queue.push_back(node);
             num_start_nodes += 1;
-            // Convert node.index() (usize) to u32.
-            let updated = update_node_label(graph, node.index() as u32, 0);
+            // Update the label to [0] for start nodes.
+            let updated = update_node_label(graph, node.index() as u32, vec![0]);
             assert!(updated, "The node with id {} should be updated", node.index());
         }
     }
@@ -144,6 +158,7 @@ fn topological_sort(graph: &mut DiGraph<MyNode, ()>) -> Vec<MyNode> {
     // Process nodes in topological order.
     while let Some(node) = queue.pop_front() {
         sorted_order.push(graph[node].clone());
+        let CurrentLabel = graph[node].label.clone();
         for neighbor in graph.neighbors(node) {
             if let Some(degree) = in_degree.get_mut(&neighbor) {
                 *degree -= 1;
@@ -182,7 +197,7 @@ fn visualize_dag(graph: &DiGraph<MyNode, ()>, dot_file: &str, image_file: &str) 
 
 /// Parse a .dot file to create a DiGraph<MyNode, ()>.
 /// Expects node definitions like: 
-///    0 [ label = "MyNode { id: 0, label: 0 }" ]
+///    0 [ label = "MyNode { id: 0, label: [-1] }" ]
 /// and edge definitions like:
 ///    0 -> 1 [ ]
 fn parse_dot_file_to_digraph(file_path: &str) -> DiGraph<MyNode, ()> {
@@ -221,17 +236,17 @@ fn parse_dot_file_to_digraph(file_path: &str) -> DiGraph<MyNode, ()> {
             let dst_id: u32 = dst_str.parse().expect("Destination node ID should be an integer");
 
             let src_index = *node_map.entry(src_id).or_insert_with(|| {
-                graph.add_node(MyNode { id: src_id, label: src_id })
+                graph.add_node(MyNode { id: src_id, label: vec![-1] })
             });
             let dst_index = *node_map.entry(dst_id).or_insert_with(|| {
-                graph.add_node(MyNode { id: dst_id, label: dst_id })
+                graph.add_node(MyNode { id: dst_id, label: vec![-1] })
             });
 
             graph.add_edge(src_index, dst_index, ());
         }
         // Handle node definitions.
         else if line.contains('[') {
-            // For example: 0 [ label = "MyNode { id: 0, label: 0 }" ]
+            // For example: 0 [ label = "MyNode { id: 0, label: [-1] }" ]
             let tokens: Vec<&str> = line.split_whitespace().collect();
             if tokens.is_empty() {
                 continue;
@@ -240,33 +255,37 @@ fn parse_dot_file_to_digraph(file_path: &str) -> DiGraph<MyNode, ()> {
             let node_id: u32 = node_str.parse().expect("Node ID should be an integer");
 
             // Extract the label from inside the quotes.
-            // The label is expected to be in the format: MyNode { id: X, label: Y }
-            let label: u32 = if let Some(quote_start) = line.find('"') {
+            // The label is expected to be in the format: MyNode { id: X, label: [Y, ...] }
+            let label: Vec<i32> = if let Some(quote_start) = line.find('"') {
                 let rest = &line[quote_start + 1..];
                 if let Some(quote_end) = rest.find('"') {
                     let label_string = &rest[..quote_end];
                     if let Some(idx) = label_string.find("label:") {
                         let remainder = &label_string[idx + 6..];
                         let remainder = remainder.trim();
-                        // Take consecutive digits from the start of the remainder.
-                        let digits: String = remainder.chars()
-                            .take_while(|c| c.is_ascii_digit())
-                            .collect();
-                        digits.parse::<u32>().unwrap_or(node_id)
+                        // Remove the surrounding brackets if present and split by comma.
+                        let remainder = remainder.trim_start_matches('[').trim_end_matches(']');
+                        if remainder.is_empty() {
+                            Vec::new()
+                        } else {
+                            remainder.split(',')
+                                .filter_map(|s| s.trim().parse::<i32>().ok())
+                                .collect()
+                        }
                     } else {
-                        node_id
+                        vec![-1]
                     }
                 } else {
-                    node_id
+                    vec![-1]
                 }
             } else {
-                node_id
+                vec![-1]
             };
 
             node_map.entry(node_id).or_insert_with(|| {
                 graph.add_node(MyNode {
                     id: node_id,
-                    label, // Use the extracted label.
+                    label, // Use the extracted label vector.
                 })
             });
         }
@@ -289,7 +308,7 @@ fn main() {
     let sorted_order = topological_sort(&mut graph);
     println!("Topological Order:");
     for node in sorted_order {
-        println!("Node {}: label {}", node.id, node.label);
+        println!("Node {}: label {:?}", node.id, node.label);
     }
 
     // Visualize the graph.
@@ -304,18 +323,13 @@ mod tests {
     fn test_update_node_label() {
         // Create a graph with some nodes.
         let mut graph: DiGraph<MyNode, ()> = DiGraph::new();
-        graph.add_node(MyNode { id: 0, label: 0 });
-        graph.add_node(MyNode { id: 1, label: 1 });
-        graph.add_node(MyNode { id: 2, label: 2 });
+        graph.add_node(MyNode { id: 0, label: vec![-1] });
+        graph.add_node(MyNode { id: 1, label: vec![-1] });
+        graph.add_node(MyNode { id: 2, label: vec![-1] });
         
         // Verify initial labels.
         for node in graph.node_weights() {
-            match node.id {
-                0 => assert_eq!(node.label, 0),
-                1 => assert_eq!(node.label, 1),
-                2 => assert_eq!(node.label, 2),
-                _ => panic!("Unexpected node id: {}", node.id),
-            }
+            assert_eq!(node.label, vec![-1], "Node {} initial label should be [-1]", node.id);
         }
         
         // Update the label for the node with id 1.
@@ -325,9 +339,9 @@ mod tests {
         // Check that node 1's label is updated while the others remain unchanged.
         for node in graph.node_weights() {
             match node.id {
-                0 => assert_eq!(node.label, 0),
-                1 => assert_eq!(node.label, 42),
-                2 => assert_eq!(node.label, 2),
+                0 => assert_eq!(node.label, vec![-1]),
+                1 => assert_eq!(node.label, vec![42]),
+                2 => assert_eq!(node.label, vec![-1]),
                 _ => panic!("Unexpected node id: {}", node.id),
             }
         }
